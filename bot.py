@@ -79,16 +79,49 @@ def fetch_feed(url: str):
         return None
 
 
+_TRANSLATOR = GoogleTranslator(source="auto", target="vi")
+TRANSLATE_RETRY_WAITS = (4, 8, 16)  # giây, tăng dần khi bị chặn do gọi quá nhanh
+TRANSLATE_THROTTLE_SECONDS = 1.0  # nghỉ giữa các lần gọi để tránh vượt giới hạn ~5 request/giây
+
+
 def translate_vi(text: str) -> str:
-    """Dịch text sang tiếng Việt. Nếu lỗi (mất mạng, bị chặn...), trả lại text gốc."""
+    """Dịch text sang tiếng Việt. Tự thử lại nếu bị giới hạn tốc độ (rate limit).
+    Nếu vẫn lỗi sau khi thử lại (mất mạng, bị chặn hẳn...), trả lại text gốc."""
     if not text:
         return text
-    try:
-        translated = GoogleTranslator(source="auto", target="vi").translate(text)
-        return translated or text
-    except Exception as exc:  # pragma: no cover - lỗi mạng/API không nên làm sập bot
-        print(f"  [Lỗi dịch] {exc}", file=sys.stderr)
-        return text
+
+    last_exc = None
+    for attempt, wait_seconds in enumerate((0, *TRANSLATE_RETRY_WAITS)):
+        if wait_seconds:
+            print(f"  [Dịch] Bị giới hạn tốc độ, đợi {wait_seconds}s rồi thử lại (lần {attempt})...")
+            time.sleep(wait_seconds)
+        try:
+            translated = _TRANSLATOR.translate(text)
+            time.sleep(TRANSLATE_THROTTLE_SECONDS)  # nghỉ để không gọi API quá dồn dập
+            return translated or text
+        except Exception as exc:  # pragma: no cover - lỗi mạng/API không nên làm sập bot
+            last_exc = exc
+
+    print(f"  [Lỗi dịch] Bỏ qua dịch, dùng bản gốc. Lỗi cuối: {last_exc}", file=sys.stderr)
+    return text
+
+
+_TRANSLATE_DELIMITER = "\n\n@@@\n\n"  # chuỗi phân tách để gộp 2 đoạn text vào 1 lần gọi dịch
+
+
+def translate_title_and_summary(title: str, summary: str) -> tuple:
+    """Dịch tiêu đề + tóm tắt trong CÙNG 1 lần gọi API (giảm số lượng request, tránh rate limit).
+    Nếu không tách lại được kết quả (do bản dịch đổi cấu trúc), fallback về dịch riêng từng phần."""
+    if not summary:
+        return translate_vi(title), ""
+
+    combined = f"{title}{_TRANSLATE_DELIMITER}{summary}"
+    translated = translate_vi(combined)
+    parts = translated.split(_TRANSLATE_DELIMITER.strip())
+    if len(parts) != 2:
+        # Bản dịch làm hỏng dấu phân tách -> dịch riêng từng phần (chậm hơn nhưng chắc chắn đúng)
+        return translate_vi(title), translate_vi(summary)
+    return parts[0].strip(), parts[1].strip()
 
 
 def format_message(feed_name: str, category: str, entry) -> str:
@@ -104,9 +137,10 @@ def format_message(feed_name: str, category: str, entry) -> str:
     if len(summary_text) > 500:
         summary_text = summary_text[:500].rsplit(" ", 1)[0] + "..."
 
-    # Dịch tiêu đề + tóm tắt sang tiếng Việt (giữ link gốc để đọc bản tiếng Anh đầy đủ)
-    title_vi = html.escape(translate_vi(raw_title))
-    summary_vi = html.escape(translate_vi(summary_text)) if summary_text else ""
+    # Dịch tiêu đề + tóm tắt sang tiếng Việt trong 1 lần gọi (giữ link gốc để đọc bản tiếng Anh đầy đủ)
+    title_vi, summary_vi = translate_title_and_summary(raw_title, summary_text)
+    title_vi = html.escape(title_vi)
+    summary_vi = html.escape(summary_vi) if summary_vi else ""
 
     lines = [
         f"🔔 <b>{title_vi}</b>",
