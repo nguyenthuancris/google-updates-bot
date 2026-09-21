@@ -22,13 +22,15 @@ from pathlib import Path
 
 import feedparser
 import requests
+from deep_translator import GoogleTranslator
 
 from feeds import FEEDS, KEYWORDS, NO_FILTER_FEEDS
 
 STATE_FILE = Path(__file__).parent / "seen_ids.json"
-MAX_ITEMS_PER_FEED_FIRST_RUN = 3
+MAX_ITEMS_PER_FEED_FIRST_RUN = 3  # lần chạy đầu tiên, chỉ lấy vài bài mới nhất mỗi nguồn (tránh spam)
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 REQUEST_TIMEOUT = 20
+
 
 def load_seen_ids() -> set:
     if STATE_FILE.exists():
@@ -41,6 +43,7 @@ def load_seen_ids() -> set:
 
 
 def save_seen_ids(seen_ids: set) -> None:
+    # Giới hạn kích thước file: chỉ giữ 3000 id gần nhất để tránh phình to mãi
     ids_list = list(seen_ids)
     if len(ids_list) > 3000:
         ids_list = ids_list[-3000:]
@@ -76,31 +79,47 @@ def fetch_feed(url: str):
         return None
 
 
+def translate_vi(text: str) -> str:
+    """Dịch text sang tiếng Việt. Nếu lỗi (mất mạng, bị chặn...), trả lại text gốc."""
+    if not text:
+        return text
+    try:
+        translated = GoogleTranslator(source="auto", target="vi").translate(text)
+        return translated or text
+    except Exception as exc:  # pragma: no cover - lỗi mạng/API không nên làm sập bot
+        print(f"  [Lỗi dịch] {exc}", file=sys.stderr)
+        return text
+
+
 def format_message(feed_name: str, category: str, entry) -> str:
-    title = html.escape(entry.get("title", "(không có tiêu đề)"))
+    raw_title = entry.get("title", "(không có tiêu đề)")
     link = entry.get("link", "")
     published = entry.get("published", "") or entry.get("updated", "")
 
     summary = entry.get("summary", "") or ""
+    # loại bỏ thẻ html thô trong summary, giữ ngắn gọn
     import re
     summary_text = re.sub("<[^<]+?>", "", summary).strip()
     summary_text = html.unescape(summary_text)
-    if len(summary_text) > 300:
-        summary_text = summary_text[:300].rsplit(" ", 1)[0] + "..."
-    summary_text = html.escape(summary_text)
+    if len(summary_text) > 500:
+        summary_text = summary_text[:500].rsplit(" ", 1)[0] + "..."
+
+    # Dịch tiêu đề + tóm tắt sang tiếng Việt (giữ link gốc để đọc bản tiếng Anh đầy đủ)
+    title_vi = html.escape(translate_vi(raw_title))
+    summary_vi = html.escape(translate_vi(summary_text)) if summary_text else ""
 
     lines = [
-        f"🔔 <b>{title}</b>",
+        f"🔔 <b>{title_vi}</b>",
         f"📌 Nguồn: {html.escape(feed_name)} ({html.escape(category)})",
     ]
     if published:
         lines.append(f"🕒 {html.escape(published)}")
-    if summary_text:
+    if summary_vi:
         lines.append("")
-        lines.append(summary_text)
+        lines.append(summary_vi)
     if link:
         lines.append("")
-        lines.append(f'<a href="{html.escape(link)}">Đọc bài gốc →</a>')
+        lines.append(f'<a href="{html.escape(link)}">Đọc bài gốc (tiếng Anh) →</a>')
 
     return "\n".join(lines)
 
@@ -150,6 +169,7 @@ def main():
             continue
 
         entries = parsed.entries
+        # Sắp xếp theo thời gian nếu có, mới nhất trước; feed vốn đã theo thứ tự này thường
         candidates = []
         for entry in entries:
             eid = entry_id(name, entry)
@@ -160,6 +180,7 @@ def main():
             candidates.append((eid, entry))
 
         if is_first_run:
+            # Lần đầu chạy: không spam toàn bộ lịch sử, chỉ lấy vài bài mới nhất mỗi nguồn
             candidates = candidates[:MAX_ITEMS_PER_FEED_FIRST_RUN]
 
         total_new_found += len(candidates)
@@ -174,11 +195,11 @@ def main():
                 ok = send_telegram_message(token, chat_id, message)
                 if ok:
                     total_sent += 1
-                    time.sleep(1.2)
+                    time.sleep(1.2)  # tránh bị Telegram giới hạn tốc độ (rate limit)
                 else:
+                    # nếu gửi lỗi, không đánh dấu là đã gửi để thử lại lần sau
                     continue
             new_seen_ids.add(eid)
-
 
     print(f"\nTổng số bài mới tìm thấy: {total_new_found}")
     if args.dry_run:
