@@ -1,0 +1,39 @@
+name: Gửi tin cập nhật Google Ads/SEO về Telegram
+
+on:
+  schedule:
+    # Chạy mỗi 30 phút. Nên để repo Public để chạy tần suất này miễn phí.
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cài Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cài thư viện
+        run: pip install -r requirements.txt
+
+      - name: Chạy bot gửi tin Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bot.py
+
+      - name: Lưu lại trạng thái đã gửi (seen_ids.json)
+        run: |
+          git config user.name "google-updates-bot"
+          git config user.email "actions@github.com"
+          git add seen_ids.json
+          git diff --cached --quiet || git commit -m "chore: cập nhật danh sách bài đã gửi [skip ci]"
+          git push
