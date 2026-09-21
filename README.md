@@ -1,26 +1,25 @@
 # Bot Telegram – Cập nhật Google Ads & SEO
 
-Bot tự động theo dõi các nguồn tin chính thức và tin ngành về **Google Ads**,
-**Google Search/SEO**, **Google Analytics (GA4)**, **Merchant Center**, **Google
-Business Profile**... rồi gửi thông báo vào nhóm/kênh Telegram của bạn, chạy
-**miễn phí** trên GitHub Actions, tự động mỗi **30 phút**.
+Bot tự động theo dõi các nguồn tin **CHÍNH THỨC** từ Google về **Google Ads**,
+**Google Search/SEO**, **Google Analytics (GA4)**, **Google Marketing Platform**...
+rồi gửi thông báo vào nhóm/kênh Telegram của bạn, chạy **miễn phí** trên GitHub
+Actions, tự động mỗi **30 phút**.
 
 ## Nguồn tin đang theo dõi
 
-**Chính thức:**
+Chỉ theo dõi các nguồn **chính thức từ Google** (đã tắt các trang tin ngành như
+Search Engine Land, PPC Land... để tránh tin vụn vặt, chỉ giữ lại thông báo quan trọng):
 - Google Search Central Blog
 - Google Search Status Dashboard (core update, spam update, sự cố)
 - Google Ads & Commerce Blog
 - Google Ads Developer Blog
 - Google Marketing Platform Blog (GA4, DV360, CM360...)
 
-**Tin ngành (tổng hợp cả GA4, Merchant Center, Google Business Profile):**
-- Search Engine Land
-- Search Engine Roundtable
-- Search Engine Journal
-- PPC Land
+> Muốn bật lại các nguồn tin ngành (Search Engine Land, PPC Land...) thì thêm lại
+> vào danh sách `FEEDS` trong file `feeds.py`.
 
-Tin nhắn giữ nguyên tiếng Anh (tiêu đề + tóm tắt gốc), kèm link đọc bài đầy đủ.
+Tin nhắn được **tự động dịch sang tiếng Việt** (tiêu đề + tóm tắt), kèm link đọc
+bài gốc tiếng Anh đầy đủ.
 
 ---
 
@@ -56,6 +55,8 @@ Tin nhắn giữ nguyên tiếng Anh (tiêu đề + tóm tắt gốc), kèm link
 
 ### Bước 4: Khai báo Secrets (token & chat id) cho GitHub Actions
 
+1. Vào repo trên GitHub → **Settings** → **Secrets and variables** → **Actions**.
+2. Bấm **New repository secret**, tạo lần lượt 2 secret:
    - `TELEGRAM_BOT_TOKEN` = token lấy ở Bước 1
    - `TELEGRAM_CHAT_ID` = chat id lấy ở Bước 2
 3. Vào tab **Actions** của repo, bật Actions nếu GitHub hỏi.
@@ -90,11 +91,13 @@ test_local.py                   # Kiểm thử logic (không cần mạng)
 
 - **Đổi tần suất gửi:** sửa dòng `cron: "*/30 * * * *"` trong file
   `.github/workflows/check-updates.yml`. Ví dụ mỗi 1 tiếng: `"0 * * * *"`.
-- **Thêm/bớt nguồn:** sửa danh sách `FEEDS` trong `feeds.py`.
-- **Đổi từ khóa lọc** (cho các nguồn tin ngành): sửa danh sách `KEYWORDS` trong `feeds.py`.
-- **Dịch sang tiếng Việt bằng AI:** hiện tại bot giữ nguyên tiếng Anh. Nếu muốn tóm tắt
-  tiếng Việt tự động, cần thêm bước gọi AI (ví dụ Claude API) trong hàm `format_message`
-  ở `bot.py` — báo em nếu anh muốn làm bước này.
+- **Thêm/bớt nguồn:** sửa danh sách `FEEDS` trong `feeds.py`. Muốn bật lại các nguồn
+  tin ngành (Search Engine Land, PPC Land...) thì thêm lại vào danh sách này, và nhớ
+  thêm tên nguồn đó vào `NO_FILTER_FEEDS` nếu muốn không lọc từ khóa.
+- **Đổi từ khóa lọc** (cho các nguồn tin ngành, nếu bật lại): sửa danh sách `KEYWORDS` trong `feeds.py`.
+- **Dịch sang tiếng Việt:** bot đã tự động dịch tiêu đề + tóm tắt sang tiếng Việt (dùng
+  MyMemory Translate, dự phòng Google Translate, đều miễn phí không cần API key) —
+  không cần làm gì thêm.
 
 ## Xử lý sự cố
 
