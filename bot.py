@@ -22,7 +22,7 @@ from pathlib import Path
 
 import feedparser
 import requests
-from deep_translator import GoogleTranslator
+from deep_translator import GoogleTranslator, MyMemoryTranslator
 
 from feeds import FEEDS, KEYWORDS, NO_FILTER_FEEDS
 
@@ -79,49 +79,58 @@ def fetch_feed(url: str):
         return None
 
 
-_TRANSLATOR = GoogleTranslator(source="auto", target="vi")
-TRANSLATE_RETRY_WAITS = (4, 8, 16)  # giây, tăng dần khi bị chặn do gọi quá nhanh
-TRANSLATE_THROTTLE_SECONDS = 1.0  # nghỉ giữa các lần gọi để tránh vượt giới hạn ~5 request/giây
+# MyMemory làm dịch vụ chính (hạn mức ~5000 từ/ngày dùng ẩn danh, ít bị chặn IP dùng chung
+# như GitHub Actions hơn so với Google Translate). Google Translate chỉ dùng làm dự phòng.
+_MYMEMORY_MAX_CHARS = 480  # MyMemory giới hạn khoảng 500 ký tự/lần gọi
+TRANSLATE_THROTTLE_SECONDS = 0.4  # nghỉ nhẹ giữa các lần gọi
+
+
+def _translate_chunk(text: str) -> str:
+    """Dịch 1 đoạn text (đã đảm bảo đủ ngắn) sang tiếng Việt, thử MyMemory trước, Google Translate sau."""
+    try:
+        translated = MyMemoryTranslator(source="en-GB", target="vi-VN").translate(text)
+        if translated:
+            return translated
+    except Exception as exc:
+        print(f"  [Lỗi dịch MyMemory] {exc}", file=sys.stderr)
+
+    try:
+        translated = GoogleTranslator(source="auto", target="vi").translate(text)
+        if translated:
+            return translated
+    except Exception as exc:
+        print(f"  [Lỗi dịch Google] {exc}", file=sys.stderr)
+
+    return text  # cả 2 dịch vụ đều lỗi -> giữ nguyên bản gốc, không làm sập bot
 
 
 def translate_vi(text: str) -> str:
-    """Dịch text sang tiếng Việt. Tự thử lại nếu bị giới hạn tốc độ (rate limit).
-    Nếu vẫn lỗi sau khi thử lại (mất mạng, bị chặn hẳn...), trả lại text gốc."""
+    """Dịch text sang tiếng Việt. Tự chia nhỏ nếu quá dài, tự chuyển dịch vụ dự phòng nếu lỗi."""
     if not text:
         return text
 
-    last_exc = None
-    for attempt, wait_seconds in enumerate((0, *TRANSLATE_RETRY_WAITS)):
-        if wait_seconds:
-            print(f"  [Dịch] Bị giới hạn tốc độ, đợi {wait_seconds}s rồi thử lại (lần {attempt})...")
-            time.sleep(wait_seconds)
-        try:
-            translated = _TRANSLATOR.translate(text)
-            time.sleep(TRANSLATE_THROTTLE_SECONDS)  # nghỉ để không gọi API quá dồn dập
-            return translated or text
-        except Exception as exc:  # pragma: no cover - lỗi mạng/API không nên làm sập bot
-            last_exc = exc
+    # Chia nhỏ theo câu để không vượt giới hạn ký tự của MyMemory, rồi ghép lại
+    chunks = []
+    current = ""
+    for sentence in text.replace("\n", " ").split(". "):
+        piece = sentence if sentence.endswith(".") else sentence + "."
+        if len(current) + len(piece) + 1 > _MYMEMORY_MAX_CHARS:
+            if current:
+                chunks.append(current.strip())
+            current = piece
+        else:
+            current = f"{current} {piece}".strip()
+    if current:
+        chunks.append(current.strip())
+    if not chunks:
+        chunks = [text[:_MYMEMORY_MAX_CHARS]]
 
-    print(f"  [Lỗi dịch] Bỏ qua dịch, dùng bản gốc. Lỗi cuối: {last_exc}", file=sys.stderr)
-    return text
+    translated_chunks = []
+    for chunk in chunks:
+        translated_chunks.append(_translate_chunk(chunk))
+        time.sleep(TRANSLATE_THROTTLE_SECONDS)
 
-
-_TRANSLATE_DELIMITER = "\n\n@@@\n\n"  # chuỗi phân tách để gộp 2 đoạn text vào 1 lần gọi dịch
-
-
-def translate_title_and_summary(title: str, summary: str) -> tuple:
-    """Dịch tiêu đề + tóm tắt trong CÙNG 1 lần gọi API (giảm số lượng request, tránh rate limit).
-    Nếu không tách lại được kết quả (do bản dịch đổi cấu trúc), fallback về dịch riêng từng phần."""
-    if not summary:
-        return translate_vi(title), ""
-
-    combined = f"{title}{_TRANSLATE_DELIMITER}{summary}"
-    translated = translate_vi(combined)
-    parts = translated.split(_TRANSLATE_DELIMITER.strip())
-    if len(parts) != 2:
-        # Bản dịch làm hỏng dấu phân tách -> dịch riêng từng phần (chậm hơn nhưng chắc chắn đúng)
-        return translate_vi(title), translate_vi(summary)
-    return parts[0].strip(), parts[1].strip()
+    return " ".join(translated_chunks)
 
 
 def format_message(feed_name: str, category: str, entry) -> str:
@@ -137,10 +146,9 @@ def format_message(feed_name: str, category: str, entry) -> str:
     if len(summary_text) > 500:
         summary_text = summary_text[:500].rsplit(" ", 1)[0] + "..."
 
-    # Dịch tiêu đề + tóm tắt sang tiếng Việt trong 1 lần gọi (giữ link gốc để đọc bản tiếng Anh đầy đủ)
-    title_vi, summary_vi = translate_title_and_summary(raw_title, summary_text)
-    title_vi = html.escape(title_vi)
-    summary_vi = html.escape(summary_vi) if summary_vi else ""
+    # Dịch tiêu đề + tóm tắt sang tiếng Việt (giữ link gốc để đọc bản tiếng Anh đầy đủ)
+    title_vi = html.escape(translate_vi(raw_title))
+    summary_vi = html.escape(translate_vi(summary_text)) if summary_text else ""
 
     lines = [
         f"🔔 <b>{title_vi}</b>",
